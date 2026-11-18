@@ -140,8 +140,6 @@
 | `Reservation` | `reservation_id`（PK）、`item_id`（FK）、`buyer_id`（FK）、`offer_id`（可空）、`agreed_price`、`agreed_meeting_time`（可空）、`agreed_meeting_place`、`status`、`source`。 |
 | `Message` | `message_id`（PK）、`sender_id`（FK）、`item_id`（FK，可空）、`reservation_id`（FK，可空）、`reply_to_message_id`（FK，可空）、`message_type`（`PUBLIC_QUESTION`／`PUBLIC_ANSWER`／`RESERVATION_MESSAGE`）、`content`、`created_at`。公開問答關聯商品；預約留言關聯預約；公開回答以 `reply_to_message_id` 指向原問題。 |
 
-> 本題預計有 5 個主要 Entity，超過作業建議的 1–3 個，但公開問答、交易提案與預約紀錄各有清楚用途，且共用訊息實體以控制規模。詳細欄位、訊息類型約束與存取權限由後續 `04-architecture-data-model.md` 定義，並在 OpenAPI 中保持一致。
-
 ## 文件導覽與建議閱讀順序
 
 1. [01-requirements.md](docs/01-requirements.md) — 使用情境、FR、Business Rules、Acceptance Criteria、Scope。
@@ -149,3 +147,7 @@
 3. [03-openapi.yaml](docs/03-openapi.yaml) — OpenAPI 3.1.0 的 Request／Response、Parameters、Schema 與 Error。
 4. [04-architecture-data-model.md](docs/04-architecture-data-model.md) — Router／Service／Repository、Request Flow、Entity／PK／FK 與 Traceability。
 5. [05-ai-collaboration.md](docs/05-ai-collaboration.md) — AI 協作過程、設計取捨、修改紀錄與跨文件一致性檢查。
+<<<<<<< HEAD
+=======
+
+>>>>>>> 0e97418 (docs: 更新 README.md 細節說明)
