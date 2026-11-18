@@ -147,7 +147,3 @@
 3. [03-openapi.yaml](docs/03-openapi.yaml) — OpenAPI 3.1.0 的 Request／Response、Parameters、Schema 與 Error。
 4. [04-architecture-data-model.md](docs/04-architecture-data-model.md) — Router／Service／Repository、Request Flow、Entity／PK／FK 與 Traceability。
 5. [05-ai-collaboration.md](docs/05-ai-collaboration.md) — AI 協作過程、設計取捨、修改紀錄與跨文件一致性檢查。
-<<<<<<< HEAD
-=======
-
->>>>>>> 0e97418 (docs: 更新 README.md 細節說明)
