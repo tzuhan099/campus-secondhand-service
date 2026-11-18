@@ -3,7 +3,7 @@
 **Campus Second-hand Trading & Reservation Platform**
 
 > **專案狀態：Design Only（僅規劃，尚未實作）**  
-> 本專案為「網際服務軟體工程」 個人 AI 協作小而美系統規劃與設計作業，將產出 Requirements、RESTful API Design、OpenAPI 3.1.0、Architecture／Data Model 與 AI Collaboration 文件；本次不實作程式碼、資料庫或測試。
+> 本專案為個人 AI 協作小而美系統規劃與設計作業，將產出 Requirements、RESTful API Design、OpenAPI 3.1.0、Architecture／Data Model 與 AI Collaboration 文件；本次不實作程式碼、資料庫或測試。
 
 ## 一句話價值主張
 
@@ -130,7 +130,7 @@
 
 ## 預計的主要資料實體
 
-為控制小而美系統的規模，**公開問答與預約留言共用 `Message` 實體**，透過訊息類型與關聯區分，不另建立完整聊天系統。
+**公開問答與預約留言共用 `Message` 實體**，透過訊息類型與關聯區分，不另建立完整聊天系統。
 
 | Entity | 角色與關鍵欄位（初步規劃） |
 |---|---|
@@ -149,5 +149,3 @@
 3. [03-openapi.yaml](docs/03-openapi.yaml) — OpenAPI 3.1.0 的 Request／Response、Parameters、Schema 與 Error。
 4. [04-architecture-data-model.md](docs/04-architecture-data-model.md) — Router／Service／Repository、Request Flow、Entity／PK／FK 與 Traceability。
 5. [05-ai-collaboration.md](docs/05-ai-collaboration.md) — AI 協作過程、設計取捨、修改紀錄與跨文件一致性檢查。
-
-> 以上為預定文件結構；尚未建立的文件連結暫時無法開啟，後續完成後需確認 GitHub 頁面上的連結與內容一致。
