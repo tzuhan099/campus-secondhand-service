@@ -1,0 +1,766 @@
+openapi: 3.1.0
+info:
+  title: 校園二手物交易與預約平台 API
+  version: 1.0.0
+  description: |
+    OpenAPI Contract（Design Only，尚未實作）。
+    依據 README.md、docs/01-requirements.md 與 docs/02-api-design.md 設計。
+    本契約定義 7 個 API Operations、3 個主要 Entity（User、Item、TradeRequest）。
+    不含公開問答、聊天、金流、物流、圖片上傳與帳號復原。
+
+    日期時間統一以 Asia/Taipei（UTC+08:00）表示，請使用 RFC 3339
+    且明確帶有 +08:00 偏移的字串，例如 2026-12-05T15:00:00+08:00。
+    meeting_time 與 proposed_meeting_time 須為提交當下的未來時間。
+    金額為正整數新臺幣，original_price 由賣家自行提供、未經查證。
+
+    交易請求分為 DIRECT（建立時立即 RESERVED）及 PROPOSAL（建立時 PENDING）。
+    同一商品同時間只能有一筆 RESERVED 請求；接受提案或直接預約
+    須以原子性交易更新 TradeRequest 與 Item，競爭失敗時回應 409。
+servers:
+  - url: /api/v1
+    description: 預期 REST API 根路徑（非已部署服務）
+tags:
+  - name: Users
+    description: 簡化使用者身分識別
+  - name: Items
+    description: 商品刊登、編輯與公開查詢
+  - name: TradeRequests
+    description: 直接預約、交易條件提案與結案
+
+paths:
+  /users:
+    post:
+      tags: [Users]
+      operationId: createUser
+      summary: 建立暱稱與操作憑證
+      description: |
+        FR-01 / BR-01。nickname 全站唯一；成功後 access_token 只在這次回傳。
+        後端只儲存該高熵隨機 Token 的雜湊，不提供密碼、SSO 或帳號復原。
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateUserRequest'
+            example:
+              nickname: campus_user
+      responses:
+        '201':
+          description: 建立成功，憑證只顯示一次
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CreateUserResponse'
+              example:
+                user_id: 1
+                nickname: campus_user
+                access_token: sample-random-token-only-shown-once
+        '409':
+          $ref: '#/components/responses/ConflictError'
+        '422':
+          $ref: '#/components/responses/ValidationError'
+        '500':
+          $ref: '#/components/responses/ServerError'
+
+  /items:
+    post:
+      tags: [Items]
+      operationId: createItem
+      summary: 刊登二手商品
+      description: |
+        FR-02 / BR-02～BR-04。系統根據 Bearer Token 取得 seller_id，
+        不接受使用者自行指定 seller_id。成功建立後 Item.status 為 AVAILABLE。
+        商品面交時間與地點皆必填，時間需晚於提交當下。
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateItemRequest'
+            example:
+              name: 二手電風扇
+              category: APPLIANCE
+              description: 功能正常，使用一年
+              selling_price: 500
+              original_price: null
+              meeting_time: '2026-12-05T15:00:00+08:00'
+              meeting_place: 校園圖書館一樓
+              department: null
+              course_name: null
+      responses:
+        '201':
+          description: 商品刊登成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ItemResponse'
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+        '422':
+          $ref: '#/components/responses/ValidationError'
+        '500':
+          $ref: '#/components/responses/ServerError'
+    get:
+      tags: [Items]
+      operationId: listItems
+      summary: 查詢及篩選公開商品
+      description: |
+        FR-03 / BR-02、BR-03。未提供 status 時僅查 AVAILABLE 商品；
+        多個查詢條件以 AND 組合。每筆回傳完整公開欄位，
+        可透過 item_id 從結果中定位指定商品；不提供獨立單筆詳情 API。
+        price_ratio_percent = selling_price / original_price × 100，
+        只有 original_price 非 null 時才計算，否則為 null。
+      security: []
+      parameters:
+        - name: keyword
+          in: query
+          description: 商品名稱包含的關鍵字
+          required: false
+          schema:
+            type: string
+            minLength: 1
+        - name: category
+          in: query
+          description: 商品分類
+          required: false
+          schema:
+            $ref: '#/components/schemas/ItemCategory'
+        - name: department
+          in: query
+          description: 適用系所關鍵字
+          required: false
+          schema:
+            type: string
+            minLength: 1
+        - name: course_name
+          in: query
+          description: 課程名稱關鍵字
+          required: false
+          schema:
+            type: string
+            minLength: 1
+        - name: status
+          in: query
+          description: 商品狀態；預設 AVAILABLE
+          required: false
+          schema:
+            allOf:
+              - $ref: '#/components/schemas/ItemStatus'
+            default: AVAILABLE
+      responses:
+        '200':
+          description: 公開商品列表
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ItemListResponse'
+        '422':
+          $ref: '#/components/responses/ValidationError'
+        '500':
+          $ref: '#/components/responses/ServerError'
+
+  /items/{itemId}:
+    patch:
+      tags: [Items]
+      operationId: updateItem
+      summary: 修改自己刊登的商品
+      description: |
+        FR-02 / BR-07、BR-08。僅賣家可修改 AVAILABLE 商品。
+        name、category、description、department、course_name 等一般資料可修改；
+        若該商品存在任何 PENDING 提案，嘗試更動 selling_price、meeting_time
+        或 meeting_place 將回傳 409，且不修改任何欄位。
+        item_id、seller_id、status 不可由此 API 更新。
+        不提供提案失效返還次數的機制。
+      security:
+        - BearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/ItemId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateItemRequest'
+            example:
+              selling_price: 480
+              meeting_time: '2026-12-06T14:00:00+08:00'
+      responses:
+        '200':
+          description: 更新成功，回傳更新後完整商品資料
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ItemResponse'
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+        '403':
+          $ref: '#/components/responses/ForbiddenError'
+        '404':
+          $ref: '#/components/responses/NotFoundError'
+        '409':
+          $ref: '#/components/responses/ConflictError'
+        '422':
+          $ref: '#/components/responses/ValidationError'
+        '500':
+          $ref: '#/components/responses/ServerError'
+
+  /items/{itemId}/requests:
+    post:
+      tags: [TradeRequests]
+      operationId: createTradeRequest
+      summary: 建立直接預約或交易條件提案
+      description: |
+        FR-04 / BR-05、BR-06、BR-08～BR-10。不可預約自己的商品。
+        DIRECT：僅傳 request_type，採目前公開條件，成功後立即
+        將 Item 和 TradeRequest 原子性鎖定為 RESERVED，其餘 PENDING 提案
+        設為 INVALIDATED。PROPOSAL：至少有一個有效調整條件且至少一個值
+        不同於公開條件；未指定的調整欄位沿用公開值，建立後狀態 PENDING，
+        不鎖定商品。同一買家對同一商品最多成功提交兩筆 PROPOSAL，
+        同時最多一筆自己的 PENDING；已拒絕／撤回／失效的次數不返還。
+        提案價格若提供，必須大於 0 且低於公開售價（動態商業驗證）。
+        agreed_* 儲存完整有效交易條件快照；PENDING 時代表待接受條件。
+        競爭失敗、請求衝突或額度用盡回傳 409。
+      security:
+        - BearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/ItemId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TradeRequestCreateRequest'
+            examples:
+              direct:
+                summary: 直接預約
+                value:
+                  request_type: DIRECT
+              proposal:
+                summary: 提出價格、時間及地點調整
+                value:
+                  request_type: PROPOSAL
+                  proposed_price: 450
+                  proposed_meeting_time: '2026-12-06T14:00:00+08:00'
+                  proposed_meeting_place: 學生活動中心門口
+      responses:
+        '201':
+          description: |
+            建立成功。DIRECT 回傳 RESERVED；PROPOSAL 回傳 PENDING。
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TradeRequestResponse'
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+        '403':
+          $ref: '#/components/responses/ForbiddenError'
+        '404':
+          $ref: '#/components/responses/NotFoundError'
+        '409':
+          $ref: '#/components/responses/ConflictError'
+        '422':
+          $ref: '#/components/responses/ValidationError'
+        '500':
+          $ref: '#/components/responses/ServerError'
+    get:
+      tags: [TradeRequests]
+      operationId: listItemTradeRequests
+      summary: 查看商品的交易請求
+      description: |
+        FR-05 / BR-08。賣家可查看該商品全部交易請求；
+        其他使用者只看自己提出的請求，可能回傳空陣列。
+        不得將其他買家的提案資料回傳給非當事人。
+      security:
+        - BearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/ItemId'
+      responses:
+        '200':
+          description: 依呼叫者身分過濾的交易請求清單
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TradeRequestListResponse'
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+        '404':
+          $ref: '#/components/responses/NotFoundError'
+        '500':
+          $ref: '#/components/responses/ServerError'
+
+  /requests/{requestId}:
+    patch:
+      tags: [TradeRequests]
+      operationId: updateTradeRequest
+      summary: 接受／拒絕／撤回提案或取消／完成預約
+      description: |
+        FR-05、FR-06 / BR-09～BR-11。僅接受 {"status":"目標狀態"}，
+        不允許修改其他交易資料。狀態轉換規則：
+
+        - PENDING → RESERVED：僅賣家接受 PROPOSAL；同交易鎖定商品，
+          並令其他 PENDING 請求變為 INVALIDATED。
+        - PENDING → REJECTED：僅賣家拒絕。
+        - PENDING → WITHDRAWN：僅該提案買家撤回。
+        - RESERVED → CANCELLED：該請求買家或商品賣家取消，商品恢復 AVAILABLE。
+        - RESERVED → COMPLETED：僅賣家確認交易，商品轉為 SOLD。
+
+        INVALIDATED 僅由成功鎖定流程自動產生，不可由用戶端直接指定。
+        終止狀態不可重新開啟，違反狀態轉換或面交時間已過回傳 409。
+        商品與請求狀態更新需為原子性操作。
+      security:
+        - BearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/RequestId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TradeRequestUpdateRequest'
+            examples:
+              accept:
+                summary: 賣家接受提案並鎖單
+                value:
+                  status: RESERVED
+              reject:
+                summary: 賣家拒絕提案
+                value:
+                  status: REJECTED
+              cancel:
+                summary: 買家／賣家取消已預約交易
+                value:
+                  status: CANCELLED
+              complete:
+                summary: 賣家確認面交完成
+                value:
+                  status: COMPLETED
+      responses:
+        '200':
+          description: 更新後的交易請求
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TradeRequestResponse'
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+        '403':
+          $ref: '#/components/responses/ForbiddenError'
+        '404':
+          $ref: '#/components/responses/NotFoundError'
+        '409':
+          $ref: '#/components/responses/ConflictError'
+        '422':
+          $ref: '#/components/responses/ValidationError'
+        '500':
+          $ref: '#/components/responses/ServerError'
+
+components:
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: opaque-token
+      description: |
+        註冊時取得的高熵隨機 Token；Authorization: Bearer <opaque-token>。
+        非 JWT。後端僅保存憑證雜湊。此設計不驗證真實校園身分。
+  parameters:
+    ItemId:
+      name: itemId
+      in: path
+      required: true
+      description: 商品識別碼
+      schema:
+        type: integer
+        minimum: 1
+    RequestId:
+      name: requestId
+      in: path
+      required: true
+      description: 交易請求識別碼
+      schema:
+        type: integer
+        minimum: 1
+  responses:
+    UnauthorizedError:
+      description: 缺少、過期或無效的操作憑證
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            error: {code: UNAUTHORIZED, message: 未提供有效操作憑證}
+    ForbiddenError:
+      description: 已識別但無權操作指定資源
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            error: {code: FORBIDDEN, message: 沒有權限操作此資源}
+    NotFoundError:
+      description: 指定的商品或交易請求不存在
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            error: {code: NOT_FOUND, message: 找不到指定資源}
+    ConflictError:
+      description: 暱稱重複、請求狀態或交易業務規則衝突
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            error: {code: ITEM_ALREADY_RESERVED, message: 商品已被其他交易請求鎖定}
+    ValidationError:
+      description: Request Body、Path 或 Query 欄位無效
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            error: {code: INVALID_INPUT, message: 請求欄位不符合規範}
+    ServerError:
+      description: 未預期的伺服器錯誤
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            error: {code: INTERNAL_ERROR, message: 系統發生未預期錯誤}
+  schemas:
+    ItemCategory:
+      type: string
+      enum: [TEXTBOOK, APPLIANCE, DAILY_GOODS]
+      description: 教科書、家電、生活用品
+    ItemStatus:
+      type: string
+      enum: [AVAILABLE, RESERVED, SOLD]
+    TradeRequestType:
+      type: string
+      enum: [DIRECT, PROPOSAL]
+    TradeRequestStatus:
+      type: string
+      enum: [PENDING, REJECTED, WITHDRAWN, INVALIDATED, RESERVED, CANCELLED, COMPLETED]
+
+    TaipeiDateTime:
+      type: string
+      format: date-time
+      pattern: '^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?\+08:00$'
+      description: |
+        臺北時間 RFC 3339（+08:00），例如 2026-12-05T15:00:00+08:00。
+        是否晚於現在屬動態業務檢查，需由 Service 驗證。
+      examples: ['2026-12-05T15:00:00+08:00']
+    PositivePrice:
+      type: integer
+      minimum: 1
+      description: 正整數新臺幣
+    CreateUserRequest:
+      type: object
+      additionalProperties: false
+      required: [nickname]
+      properties:
+        nickname:
+          type: string
+          minLength: 2
+          maxLength: 30
+          pattern: '.*\S.*'
+          description: 全站唯一且非純空白；實際唯一性由後端驗證
+    CreateUserResponse:
+      type: object
+      additionalProperties: false
+      required: [user_id, nickname, access_token]
+      properties:
+        user_id:
+          type: integer
+          minimum: 1
+          description: User PK
+        nickname:
+          type: string
+          minLength: 2
+          maxLength: 30
+        access_token:
+          type: string
+          minLength: 1
+          description: 只在建立 User 的成功回應顯示一次的高熵隨機憑證
+
+    CreateItemRequest:
+      type: object
+      additionalProperties: false
+      required: [name, category, description, selling_price, meeting_time, meeting_place]
+      properties:
+        name:
+          type: string
+          minLength: 1
+        category:
+          $ref: '#/components/schemas/ItemCategory'
+        description:
+          type: string
+          minLength: 1
+        selling_price:
+          $ref: '#/components/schemas/PositivePrice'
+        original_price:
+          oneOf:
+            - $ref: '#/components/schemas/PositivePrice'
+            - type: 'null'
+          default: null
+          description: 賣家自填原價，選填且未查證
+        meeting_time:
+          $ref: '#/components/schemas/TaipeiDateTime'
+        meeting_place:
+          type: string
+          minLength: 1
+          pattern: '.*\S.*'
+        department:
+          type: [string, 'null']
+          minLength: 1
+          default: null
+        course_name:
+          type: [string, 'null']
+          minLength: 1
+          default: null
+    UpdateItemRequest:
+      type: object
+      additionalProperties: false
+      minProperties: 1
+      description: |
+        僅可修改指定欄位。商品必須 AVAILABLE；
+        有 PENDING 提案時變更 selling_price、meeting_time 或 meeting_place 回傳 409。
+        original_price、department、course_name 可明確設為 null；其他欄位不得為 null。
+      properties:
+        name:
+          type: string
+          minLength: 1
+        category:
+          $ref: '#/components/schemas/ItemCategory'
+        description:
+          type: string
+          minLength: 1
+        selling_price:
+          $ref: '#/components/schemas/PositivePrice'
+        original_price:
+          oneOf:
+            - $ref: '#/components/schemas/PositivePrice'
+            - type: 'null'
+        meeting_time:
+          $ref: '#/components/schemas/TaipeiDateTime'
+        meeting_place:
+          type: string
+          minLength: 1
+          pattern: '.*\S.*'
+        department:
+          type: [string, 'null']
+          minLength: 1
+        course_name:
+          type: [string, 'null']
+          minLength: 1
+    ItemResponse:
+      type: object
+      additionalProperties: false
+      required:
+        - item_id
+        - seller_id
+        - name
+        - category
+        - description
+        - department
+        - course_name
+        - selling_price
+        - original_price
+        - price_ratio_percent
+        - meeting_time
+        - meeting_place
+        - status
+      properties:
+        item_id:
+          type: integer
+          minimum: 1
+        seller_id:
+          type: integer
+          minimum: 1
+        name:
+          type: string
+        category:
+          $ref: '#/components/schemas/ItemCategory'
+        description:
+          type: string
+        department:
+          type: [string, 'null']
+        course_name:
+          type: [string, 'null']
+        selling_price:
+          $ref: '#/components/schemas/PositivePrice'
+        original_price:
+          oneOf:
+            - $ref: '#/components/schemas/PositivePrice'
+            - type: 'null'
+        price_ratio_percent:
+          type: [number, 'null']
+          minimum: 0
+          description: selling_price / original_price × 100；原價未提供則 null，非已驗證折扣
+        meeting_time:
+          $ref: '#/components/schemas/TaipeiDateTime'
+        meeting_place:
+          type: string
+        status:
+          $ref: '#/components/schemas/ItemStatus'
+    ItemListResponse:
+      type: object
+      additionalProperties: false
+      required: [items]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/ItemResponse'
+
+    TradeRequestCreateRequest:
+      description: |
+        DIRECT 不可夾帶調整條件；PROPOSAL 至少包含一項調整欄位。
+        每項調整需與商品當時公開條件比較；至少一項不同。
+        若提出價格，還須小於商品公開售價；此類動態檢查由 Service 執行。
+      oneOf:
+        - $ref: '#/components/schemas/DirectTradeRequestInput'
+        - $ref: '#/components/schemas/ProposalTradeRequestInput'
+      discriminator:
+        propertyName: request_type
+        mapping:
+          DIRECT: '#/components/schemas/DirectTradeRequestInput'
+          PROPOSAL: '#/components/schemas/ProposalTradeRequestInput'
+    DirectTradeRequestInput:
+      type: object
+      additionalProperties: false
+      required: [request_type]
+      properties:
+        request_type:
+          type: string
+          const: DIRECT
+          description: 直接依公開條件預約
+    ProposalTradeRequestInput:
+      type: object
+      additionalProperties: false
+      required: [request_type]
+      anyOf:
+        - required: [proposed_price]
+        - required: [proposed_meeting_time]
+        - required: [proposed_meeting_place]
+      properties:
+        request_type:
+          type: string
+          const: PROPOSAL
+        proposed_price:
+          $ref: '#/components/schemas/PositivePrice'
+        proposed_meeting_time:
+          $ref: '#/components/schemas/TaipeiDateTime'
+        proposed_meeting_place:
+          type: string
+          minLength: 1
+          pattern: '.*\S.*'
+
+    TradeRequestUpdateRequest:
+      type: object
+      additionalProperties: false
+      required: [status]
+      properties:
+        status:
+          type: string
+          enum: [RESERVED, REJECTED, WITHDRAWN, CANCELLED, COMPLETED]
+          description: |
+            目標狀態。允許轉換取決於目前狀態與操作者身分。
+            不允許用戶端指定 INVALIDATED，亦不可直接修改價格或面交條件。
+
+    TradeRequestResponse:
+      type: object
+      additionalProperties: false
+      required:
+        - request_id
+        - item_id
+        - buyer_id
+        - request_type
+        - status
+        - proposed_price
+        - proposed_meeting_time
+        - proposed_meeting_place
+        - agreed_price
+        - agreed_meeting_time
+        - agreed_meeting_place
+        - created_at
+      properties:
+        request_id:
+          type: integer
+          minimum: 1
+        item_id:
+          type: integer
+          minimum: 1
+        buyer_id:
+          type: integer
+          minimum: 1
+        request_type:
+          $ref: '#/components/schemas/TradeRequestType'
+        status:
+          $ref: '#/components/schemas/TradeRequestStatus'
+        proposed_price:
+          oneOf:
+            - $ref: '#/components/schemas/PositivePrice'
+            - type: 'null'
+          description: 買家有調整價格時才有值；DIRECT 時固定 null
+        proposed_meeting_time:
+          oneOf:
+            - $ref: '#/components/schemas/TaipeiDateTime'
+            - type: 'null'
+        proposed_meeting_place:
+          type: [string, 'null']
+        agreed_price:
+          $ref: '#/components/schemas/PositivePrice'
+        agreed_meeting_time:
+          $ref: '#/components/schemas/TaipeiDateTime'
+        agreed_meeting_place:
+          type: string
+        created_at:
+          $ref: '#/components/schemas/TaipeiDateTime'
+      description: |
+        agreed_* 在 PENDING 時是完整的待接受條件快照；
+        進入 RESERVED 後是成立的交易條件。
+        交易歷史狀態變更不覆蓋原有請求。
+    TradeRequestListResponse:
+      type: object
+      additionalProperties: false
+      required: [requests]
+      properties:
+        requests:
+          type: array
+          items:
+            $ref: '#/components/schemas/TradeRequestResponse'
+
+    ErrorResponse:
+      type: object
+      additionalProperties: false
+      required: [error]
+      properties:
+        error:
+          type: object
+          additionalProperties: false
+          required: [code, message]
+          properties:
+            code:
+              type: string
+              enum:
+                - NICKNAME_CONFLICT
+                - INVALID_INPUT
+                - UNAUTHORIZED
+                - FORBIDDEN
+                - NOT_FOUND
+                - ITEM_ALREADY_RESERVED
+                - PENDING_REQUEST_EXISTS
+                - PROPOSAL_LIMIT_REACHED
+                - ITEM_TERMS_LOCKED
+                - INVALID_STATUS_TRANSITION
+                - MEETING_TIME_PASSED
+                - INTERNAL_ERROR
+            message:
+              type: string
+              minLength: 1
