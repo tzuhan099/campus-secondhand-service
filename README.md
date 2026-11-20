@@ -4,6 +4,7 @@
 
 > **專案狀態：Design Only（僅規劃，尚未實作）**  
 > 本次只交付需求、RESTful API、OpenAPI、架構與資料模型、AI 協作文件，不實作程式、資料庫或測試。
+> **GitHub Repository：** https://github.com/tzuhan099/campus-secondhand-service/tree/main
 
 ## 一句話價值主張
 
