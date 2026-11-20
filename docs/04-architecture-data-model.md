@@ -1,6 +1,6 @@
 # 04｜系統架構與資料模型（Architecture & Data Model）
 
-> **專案：** 校園二手物交易與預約平台  
+> **專案：** 校園二手物交易與預約平台    
 > **專案狀態：** Design Only（僅規劃，未實作程式碼、資料庫或測試）  
 
 ## 1. 架構目標與範圍
@@ -11,7 +11,7 @@
 
 - **對外 API 前綴：** `/api/v1`；OpenAPI `servers.url` 使用 `/api/v1`，`paths` 為相對路徑。
 - **使用者識別：** `POST /users` 建立全站唯一暱稱與隨機操作憑證；受保護操作採 `Authorization: Bearer <opaque-token>`。伺服器僅保存憑證雜湊。
-- **日期時間：** 對外以 `Asia/Taipei`（UTC+08:00）RFC 3339 表示，例如 `2026-12-05T15:00:00+08:00`；面交時間須晚於請求處理當下。儲存層可以使用可正確還原時區的時間型別，但回應仍遵循契約。
+- **日期時間：** 對外以 `Asia/Taipei`（UTC+08:00）RFC 3339 表示，例如 `2026-12-05T15:00:00+08:00`；刊登／更新時間、建立直接預約、建立提案（合併條件後）及接受提案（快照）檢查未來有效；拒絕／撤回／取消／完成不受逾時限制。儲存層可以使用可正確還原時區的時間型別，但回應仍遵循契約。
 - **金額：** 正整數新臺幣；`original_price` 可為 `null`，未經憑據查證。
 
 ## 2. 分層架構（Router → Service → Repository）
@@ -62,10 +62,12 @@ sequenceDiagram
     R->>S: createTradeRequest(user_id, itemId, body)
     S->>IR: 讀取商品及賣家 / 檢查 AVAILABLE
     alt PROPOSAL
+        S->>S: 合併提案欄位與公開條件，檢查 agreed_meeting_time 為未來
         S->>TR: 檢查同買家 PENDING 與累計提案數 (< 2)
         S->>TR: 建立 PROPOSAL / PENDING + 條件快照
         TR-->>S: 新交易請求
     else DIRECT
+        S->>S: 檢查公開 meeting_time 仍在未來
         Note over S,TR: 開啟同一資料交易並確保並行互斥
         S->>IR: 條件式鎖定 AVAILABLE → RESERVED
         S->>TR: 建立 DIRECT / RESERVED + 公開條件快照
@@ -81,19 +83,19 @@ sequenceDiagram
 **文字步驟與狀態判斷：**
 
 1. **Router：** 解析 `itemId`（正整數）、Bearer Token、JSON Body；依 `TradeRequestCreateRequest` 驗證 `DIRECT`／`PROPOSAL` 結構。格式不合法回 `422`；憑證無效回 `401`。
-2. **Service：** 取得當前使用者與商品，確認商品存在（否則 `404`）、呼叫者不是賣家（否則 `403`），且商品為 `AVAILABLE`（否則 `409`）；再檢查公開 `meeting_time` 是否仍有效。
-3. **`PROPOSAL` 分支：** 至少提出一項與公開條件不同的調整；若有改價，`0 < proposed_price < selling_price`；時間為未來、地點非空白。利用 `TradeRequestRepository` 檢查同買家同商品累計 `PROPOSAL` 少於 2，且目前沒有該買家的 `PENDING`。通過後建立 `PROPOSAL`、`PENDING`，保存 `proposed_*` 及完整的 `agreed_*` 條件快照；商品仍 `AVAILABLE`。
-4. **`DIRECT` 分支：** 只能傳 `request_type: DIRECT`，完整採用商品公開條件。在**同一原子性資料交易**中，條件式鎖定 Item（`AVAILABLE → RESERVED`）、建立 `DIRECT/RESERVED` 的 `TradeRequest`，並將該商品其他 `PENDING` 提案改成 `INVALIDATED`。若其他交易已先鎖單，整筆回滾並回 `409`；成功則 `201`。
+2. **Service 共通檢查：** 取得當前使用者與商品，確認商品存在（否則 `404`）、呼叫者不是賣家（否則 `403`），且商品為 `AVAILABLE`（否則 `409`）。**此時不先驗證公開面交時間**，而是在判別 `DIRECT`／`PROPOSAL` 後檢查各自的有效時間。
+3. **`PROPOSAL` 分支：** 先合併選填提案與公開條件，確認 `agreed_meeting_time` 為未來；即使公開時間已過，只要提案改成未來時間就可繼續（若仍為過去時間則 `422`）。至少提出一項與公開條件不同的調整；若有改價，`0 < proposed_price < selling_price`；地點非空白。利用 `TradeRequestRepository` 檢查同買家同商品累計 `PROPOSAL` 少於 2，且目前沒有該買家的 `PENDING`。通過後建立 `PROPOSAL`、`PENDING`，保存 `proposed_*` 及完整的 `agreed_*` 條件快照；商品仍 `AVAILABLE`。
+4. **`DIRECT` 分支：** 只能傳 `request_type: DIRECT`，完整採用商品公開條件，須確認公開 `meeting_time` 仍在未來（否則 `422`）。在**同一原子性資料交易**中，條件式鎖定 Item（`AVAILABLE → RESERVED`）、建立 `DIRECT/RESERVED` 的 `TradeRequest`，並將該商品其他 `PENDING` 提案改成 `INVALIDATED`。若其他交易已先鎖單，整筆回滾並回 `409`；成功則 `201`。
 5. **回應：** Router 按 `TradeRequestResponse` 回傳 `request_id`、狀態、`agreed_*` 等欄位。`PROPOSAL` 回 `PENDING`、`DIRECT` 回 `RESERVED`。
 
-**補充：賣家接受提案的鎖單流程。** `PATCH /requests/{requestId}`（API-07，`{"status":"RESERVED"}`）只能由商品賣家對 `PENDING/PROPOSAL` 執行；Service 確認商品仍 `AVAILABLE`、提案快照的面交時間仍在未來，再以同一交易更新該請求與 Item 為 `RESERVED`，並使其他 `PENDING` → `INVALIDATED`。這與直接預約**共用同一原子性鎖單規則**；競爭失敗為 `409 Conflict`（FR-05、BR-09、BR-10）。
+**補充：賣家接受提案的鎖單流程。** `PATCH /requests/{requestId}`（API-07，`{"status":"RESERVED"}`）只能由商品賣家對 `PENDING/PROPOSAL` 執行；Service 確認商品仍 `AVAILABLE`、提案快照的面交時間仍在未來，再以同一交易更新該請求與 Item 為 `RESERVED`，並使其他 `PENDING` → `INVALIDATED`。這與直接預約**共用同一原子性鎖單規則**；競爭失敗為 `409 Conflict`（FR-05、BR-09、BR-10）。但拒絕／撤回過期提案、取消或完成已過面交時間的有效預約，均不需再檢查時間為未來。若公開時間已過且有 `PENDING`，須先拒絕所有待處理提案或由買家撤回，才能修改公開面交時間；已用額度不返還。
 
 ### 3.2 原子性與防重複鎖單設計
 
 **設計約束：** 同一商品在任何時刻至多存在一筆 `TradeRequest.status = RESERVED`，且 `Item.status = RESERVED` 必須對應該筆有效請求。
 
 - **交易邊界：** 鎖定 Item、建立或更新有效 TradeRequest、使其他 `PENDING` 失效，必須視為單一交易；任一步失敗全部回滾。
-- **並行控制：** Repository 必須提供原子性條件更新（僅在 `Item.status = AVAILABLE` 時轉為 `RESERVED`）或等效的列鎖定方案；資料層另建議對同一 `item_id` 的 `RESERVED` 請求施加唯一性限制，作為第二道保障。
+- **並行控制：** Repository 必須提供原子性條件更新（僅在 `Item.status = AVAILABLE` 時轉為 `RESERVED`）或等效的列鎖定方案；資料層另建議對同一 `item_id` 的 `RESERVED` 請求施加唯一性限制，作為第二道保障。**建立 `PROPOSAL` 與建立 `DIRECT` 也應對同一商品協調互斥或在寫入前重新確認狀態**，避免直接預約剛完成鎖單／使待處理提案失效後，另一個並行請求才插入新的 `PENDING`。
 - **結果：** 第一個成功提交的預約取得鎖定；其他競爭操作回 `409 Conflict`，不可產生第二筆 `RESERVED`，也不可留下半完成的交易。
 - **取消／完成：** `PATCH /requests/{requestId}` 從 `RESERVED` → `CANCELLED` 時，同交易將商品改回 `AVAILABLE`；→ `COMPLETED` 時將商品改為 `SOLD`。歷史請求保留，不覆寫也不重新啟用。
 - **提案額度與編輯衝突：** 累計兩次提案及同買家最多一筆 `PENDING`，須在並行建立提案時仍成立；賣家修改公開交易條件也必須與檢查是否存在 `PENDING` 的步驟一致化，避免同時建立提案與修改價格造成舊條件提案。
@@ -255,7 +257,7 @@ erDiagram
 | 商品修改限制 | 有 `PENDING` 時不得變更公開售價、時間、地點 | FR-02、BR-07 |
 | 成功鎖單 | 直接預約或賣家接受提案均更新 `Item` 與 `TradeRequest` | FR-04、FR-05、BR-09～BR-10 |
 | 取消及完成 | 買家／賣家可取消；僅賣家可完成；歷史保留 | FR-06、BR-11 |
-| 日期時間 | `Asia/Taipei`（`+08:00`），面交時間必填且為未來 | BR-04、OpenAPI `TaipeiDateTime` |
+| 日期時間 | `Asia/Taipei`（`+08:00`）；建立／接受預約檢查對應有效時間，結案與撤回／拒絕不受逾時限制 | BR-04、OpenAPI `TaipeiDateTime` |
 | 對外資料 | 只回傳公開 Item 欄位、當事人有權讀取的請求 | BR-08、Item／TradeRequest Response |
 
 **本次刻意不做：** 公開問答、預約後私訊、金流、物流、圖片上傳、帳號復原、校園 SSO、自動到期及通知。系統只提供明確的價格／面交時間／地點與交易狀態，買賣雙方依約線下面交；無法履約則取消預約。

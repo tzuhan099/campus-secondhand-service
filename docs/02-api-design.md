@@ -1,14 +1,14 @@
 # 02｜RESTful API 設計（RESTful API Design）
 
 > **專案：** 校園二手物交易與預約平台  
-> **狀態：** Design Only  
+> **狀態：** Design Only（介面規劃，未實作）
 
 ## 1. 設計原則與共通約定
 
 - **Base URL：** `/api/v1`。下列路徑表格省略前綴，實際呼叫需加上 `/api/v1`。
 - **資料格式：** HTTP／JSON；以資源名詞 `users`、`items`、`requests` 為路徑，HTTP Method 表示操作。
 - **身分識別：** `POST /users` 不需驗證；其餘寫入及交易請求查詢採 `Authorization: Bearer <opaque-token>`，Token 為高熵隨機字串，伺服器只保存雜湊；`GET /items` 可匿名。
-- **日期時間：** 統一臺北時間 `Asia/Taipei`（UTC+08:00），API 欄位為 RFC 3339 字串，例如 `2026-12-05T15:00:00+08:00`；面交時間必填且未來有效。
+- **日期時間：** 統一臺北時間 `Asia/Taipei`（UTC+08:00），API 欄位為 RFC 3339 字串，例如 `2026-12-05T15:00:00+08:00`。刊登／更新面交時間、直接預約、建立提案（合併後時間）及接受提案（快照時間）須檢查未來有效；拒絕、撤回、取消、完成不因時間已過而禁止。
 - **金額：** 正整數新臺幣（integer）；`original_price` 可省略或傳 `null`，不做查證。
 - **狀態欄位：** `Item.status` 為 `AVAILABLE`／`RESERVED`／`SOLD`；`TradeRequest.status` 為 `PENDING`／`REJECTED`／`WITHDRAWN`／`INVALIDATED`／`RESERVED`／`CANCELLED`／`COMPLETED`。
 - **代碼慣例：** 成功新增 `201`、查詢／更新 `200`、輸入或欄位校驗失敗 `422`、未驗證 `401`、無權限 `403`、資源不存在 `404`、狀態／唯一性／額度衝突 `409`；未預期伺服器錯誤 `500`。
@@ -25,7 +25,7 @@
 | API-06 | TradeRequest | `GET` | `/items/{itemId}/requests` | 查看該商品有權存取的請求 | FR-05 |
 | API-07 | TradeRequest | `PATCH` | `/requests/{requestId}` | 接受／拒絕／撤回提案、取消／完成預約 | FR-05、FR-06 |
 
-**只有這 7 條 API。** 商品公開詳情由 `GET /items` 的完整列表資料提供，可用 `item_id` 在結果中找到指定商品；不另提供 `GET /items/{itemId}`。交易請求的單筆詳情由 `GET /items/{itemId}/requests` 所回傳清單提供，不另增加 `GET /requests/{requestId}`。
+**只有這 7 條 API。** 核心交易亮點由 API-03（查詢）、API-05（建立請求）、API-07（狀態處理／鎖單）支援，其餘四條為刊登、身分與請求查閱等必要支援操作。商品公開詳情由 `GET /items` 的完整列表資料提供，可用 `item_id` 在結果中找到指定商品；不另提供 `GET /items/{itemId}`。交易請求的單筆詳情由 `GET /items/{itemId}/requests` 所回傳清單提供，不另增加 `GET /requests/{requestId}`。
 
 ## 3. API 詳細設計
 
@@ -33,7 +33,7 @@
 
 - **用途：** 建立全站唯一暱稱，取得後續操作憑證。
 - **驗證：** 不需要。
-- **Request Body：** `{ "nickname": "campus_user" }`；`nickname` 為非空白字串（建議長度 2–30 字元）。
+- **Request Body：** `{ "nickname": "campus_user" }`；`nickname` 必須為 2–30 字元且不可全為空白。
 - **成功：** `201 Created`，回傳 `user_id`、`nickname`、`access_token`。Token 僅此時顯示，後續不再提供明文查詢。
 - **失敗：** `409` 暱稱重複；`422` 暱稱欄位無效；`500` 系統錯誤。
 - **對應：** FR-01／BR-01。
@@ -103,7 +103,7 @@
 { "request_type": "DIRECT" }
 ```
 
-- 必須使用目前公開售價、面交時間、地點，不能夾帶調整條件。
+- 必須使用目前公開售價、面交時間、地點，不能夾帶調整條件；公開面交時間須仍在未來，否則回傳 `422`。
 - 只有商品 `AVAILABLE` 時可成功建立；`TradeRequest.status` **立即設為 `RESERVED`**，`Item.status` 同時轉為 `RESERVED`。
 
 **B. 正式交易提案 Request**
@@ -118,7 +118,7 @@
 ```
 
 - `proposed_price`、`proposed_meeting_time`、`proposed_meeting_place` 可各自選填；至少一項應與當時公開條件不同；未指定的採商品公開值。
-- 改價僅允許 0 < `proposed_price` < `selling_price`。面交時間必須是未來，地點不得空白。
+- 改價僅允許 0 < `proposed_price` < `selling_price`。先將選填提案欄位與公開條件合併，**以合併後的 `agreed_meeting_time` 判斷是否為未來**，地點不得空白；即使公開時間已過，買家提供新的未來面交時間仍可建立提案；若沿用已過的公開時間則回 `422`。
 - 每位買家對同一商品累計最多兩筆 `PROPOSAL`，同時最多一筆自己的 `PENDING`。成功建立後狀態為 `PENDING`，不鎖定商品。
 
 **共同成功回應：** `201 Created`，回傳 `TradeRequestResponse`，包含 `request_id`、`item_id`、`buyer_id`、`request_type`、`status`、`proposed_*`、`agreed_price`、`agreed_meeting_time`、`agreed_meeting_place`、`created_at`。`agreed_*` 為計算後的有效條件快照，在 `PENDING` 階段代表待接受的條件，`RESERVED` 階段代表成立條件。
@@ -133,7 +133,7 @@
 - **驗證：** 必須。
 - **Path：** `itemId`（正整數）。
 - **成功：** `200 OK`，回傳 `requests` 陣列（`TradeRequestResponse`）。商品賣家可見該商品所有請求；其他使用者只看自己提出的請求（可能為空陣列）。
-- **失敗：** `401` 無效憑證；`404` 商品不存在；`500` 系統錯誤。
+- **失敗：** `401` 無效憑證；`404` 商品不存在；`422` `itemId` 格式錯誤或非正整數；`500` 系統錯誤。
 - **權限：** 不得把他人提案返回非當事人的買家；回應不含任何憑證。
 - **對應：** FR-05／BR-08。
 
@@ -153,7 +153,7 @@
 | `RESERVED` | `COMPLETED` | 商品賣家 | Item → `SOLD` |
 
 - **成功：** `200 OK`，回傳更新後 `TradeRequestResponse`。
-- **失敗：** `401` 無效憑證；`403` 非合法操作者；`404` 請求不存在；`409` 狀態轉換不允許、面交時間已過、鎖單競爭失敗；`422` 目標狀態不合法；`500` 系統錯誤。
+- **失敗：** `401` 無效憑證；`403` 非合法操作者；`404` 請求不存在；`409` 狀態轉換不允許、**接受提案時其 `agreed_meeting_time` 已過**、鎖單競爭失敗；`422` 目標狀態不合法；`500` 系統錯誤。**拒絕／撤回、取消／完成不因面交時間已過被拒絕**，仍須符合身分及狀態規則。
 - **限制：** 用戶端不能直接指定 `INVALIDATED`；它僅由成功鎖單流程批次產生。`DIRECT` 在建立時已 `RESERVED`，不需要額外接受步驟。終止狀態不可重新開啟。
 - **對應：** FR-05、FR-06／BR-09～BR-11。
 
@@ -189,7 +189,7 @@
 
 ```text
 POST /items/{itemId}/requests {"request_type":"DIRECT"}
-  → 檢查商品 AVAILABLE 與非本人商品
+  → 檢查商品 AVAILABLE、非本人商品，且公開 meeting_time 仍在未來（否則 422）
   → 原子性建立 TradeRequest (DIRECT, RESERVED)，鎖定 Item (RESERVED)
   → 同步 INVALIDATED 其他 PENDING 提案
   → 201 Created；競爭失敗 → 409 Conflict
@@ -200,11 +200,12 @@ POST /items/{itemId}/requests {"request_type":"DIRECT"}
 ```text
 POST /items/{itemId}/requests {"request_type":"PROPOSAL", ...}
   → 確認 AVAILABLE、同買家 PENDING 不重複、累計提案 < 2
+  → 合併提案與公開條件，檢查完整 agreed_meeting_time 在未來（否則 422）
   → 建立 TradeRequest (PROPOSAL, PENDING)，保存條件快照
   → 201 Created
 
 PATCH /requests/{requestId} {"status":"RESERVED"}（賣家）
-  → 檢查 PENDING、商品 AVAILABLE、面交時間尚未過去
+  → 檢查 PENDING、商品 AVAILABLE、提案快照 agreed_meeting_time 尚未過去
   → 原子性將該請求／商品改為 RESERVED
   → 其他 PENDING → INVALIDATED
   → 200 OK；鎖單競爭失敗 → 409 Conflict
@@ -231,6 +232,8 @@ PATCH /requests/{requestId} {"status":"COMPLETED"}
   → 僅賣家可確認 RESERVED
   → 同一交易：TradeRequest → COMPLETED，Item → SOLD
 ```
+
+`REJECTED`／`WITHDRAWN` 不受提案時間逾期限制；`CANCELLED`／`COMPLETED` 也不受已約定面交時間是否過去限制。若公開時間已過且有多筆 `PENDING`，賣家可先拒絕所有待處理提案，再更新公開面交時間。
 
 取消後歷史請求不恢復；買家若要重新預約，建立新 `DIRECT` 或在仍有額度的情況下建立新 `PROPOSAL`。平台不提供站內協調或後續改約。
 

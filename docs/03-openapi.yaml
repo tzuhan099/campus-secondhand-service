@@ -10,7 +10,9 @@ info:
 
     日期時間統一以 Asia/Taipei（UTC+08:00）表示，請使用 RFC 3339
     且明確帶有 +08:00 偏移的字串，例如 2026-12-05T15:00:00+08:00。
-    meeting_time 與 proposed_meeting_time 須為提交當下的未來時間。
+    刊登／更新的 meeting_time 必須為未來時間；DIRECT 檢查公開時間，
+    PROPOSAL 檢查合併提案欄位後的 agreed_meeting_time。接受提案時
+    再檢查快照 agreed_meeting_time；拒絕、撤回、取消及完成不因時間已過而禁止。
     金額為正整數新臺幣，original_price 由賣家自行提供、未經查證。
 
     交易請求分為 DIRECT（建立時立即 RESERVED）及 PROPOSAL（建立時 PENDING）。
@@ -222,6 +224,11 @@ paths:
         同時最多一筆自己的 PENDING；已拒絕／撤回／失效的次數不返還。
         提案價格若提供，必須大於 0 且低於公開售價（動態商業驗證）。
         agreed_* 儲存完整有效交易條件快照；PENDING 時代表待接受條件。
+        DIRECT 必須以仍在未來的公開 meeting_time 預約；PROPOSAL 先合併
+        調整欄位和公開條件，再檢查 agreed_meeting_time 是否仍在未來。
+        若公開面交時間已過，但提案提供新的未來時間，仍可建立 PENDING；
+        若沿用已過時間，輸入不符合新請求條件，回傳 422。
+        提案建立與直接預約須在並行控制下確認商品仍 AVAILABLE。
         競爭失敗、請求衝突或額度用盡回傳 409。
       security:
         - BearerAuth: []
@@ -288,6 +295,8 @@ paths:
           $ref: '#/components/responses/UnauthorizedError'
         '404':
           $ref: '#/components/responses/NotFoundError'
+        '422':
+          $ref: '#/components/responses/ValidationError'
         '500':
           $ref: '#/components/responses/ServerError'
 
@@ -308,8 +317,11 @@ paths:
         - RESERVED → COMPLETED：僅賣家確認交易，商品轉為 SOLD。
 
         INVALIDATED 僅由成功鎖定流程自動產生，不可由用戶端直接指定。
-        終止狀態不可重新開啟，違反狀態轉換或面交時間已過回傳 409。
-        商品與請求狀態更新需為原子性操作。
+        終止狀態不可重新開啟。只有 PENDING → RESERVED（賣家接受提案）
+        須再次檢查快照 agreed_meeting_time 仍在未來；若已過回傳 409。
+        REJECTED、WITHDRAWN、CANCELLED、COMPLETED 不因面交時間已過
+        被拒絕，但仍須符合權限與狀態轉換規則。商品與請求狀態
+        更新需為原子性操作。
       security:
         - BearerAuth: []
       parameters:
@@ -469,7 +481,7 @@ components:
           minLength: 2
           maxLength: 30
           pattern: '.*\S.*'
-          description: 全站唯一且非純空白；實際唯一性由後端驗證
+          description: 必須為 2–30 字元、至少一個非空白字元且全站唯一；實際唯一性由後端驗證
     CreateUserResponse:
       type: object
       additionalProperties: false

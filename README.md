@@ -37,7 +37,7 @@
 - 買家可調整公開售價、面交日期時間或面交地點的一項或多項；未調整的欄位沿用刊登條件。至少一項須不同；若調整價格，必須大於 0 且低於公開售價。
 - 賣家可接受或拒絕 `PENDING` 提案；買家可撤回。每筆提案成功建立即計入兩次額度，**拒絕、撤回或因他人成功預約而失效，都不返還次數**。
 - 提案不自動過期，也不提供反向出價；提案內容僅提案買家與商品賣家可查看。
-- **有任何 `PENDING` 提案時，賣家不得修改商品的公開售價、面交日期時間或地點**；須先拒絕或等待買家撤回，再修改。違反時回傳 `409 Conflict`。因此不需要提案失效返還次數的機制。
+- **有任何 `PENDING` 提案時，賣家不得修改商品的公開售價、面交日期時間或地點**；須先拒絕所有待處理提案或由買家撤回，才能修改。即使原定面交時間已過，仍可拒絕／撤回；違反修改限制回傳 `409 Conflict`，不返還已提交提案次數。
 
 ### 3. 直接預約／接受提案即鎖定（核心亮點）
 
@@ -81,7 +81,7 @@
 
 ## 日期時間與操作識別
 
-- **統一時區：** `Asia/Taipei`（UTC+08:00）；API 日期時間使用 ISO 8601／RFC 3339，範例：`2026-12-05T15:00:00+08:00`。面交時間為**必填且須晚於提交當下**；不做時間自動到期排程。
+- **統一時區：** `Asia/Taipei`（UTC+08:00）；API 日期時間使用 ISO 8601／RFC 3339，範例：`2026-12-05T15:00:00+08:00`。刊登及修改面交時間須為未來時間；`DIRECT` 依公開時間檢查，`PROPOSAL` 依「調整欄位與公開條件合併後」的時間檢查，賣家接受時再檢查提案快照時間。拒絕／撤回提案、取消／完成預約不因約定時間已過而禁止；不做自動到期排程。
 - **簡化識別：** 免密碼，不做校園 SSO；註冊時建立不可重複的暱稱及隨機操作憑證，後續用憑證驗證資源操作權限。憑證遺失不可自助恢復，不提供跨裝置登入。
 - **面交限制：** 系統提供刊登時公開的交易時間地點，以及經賣家接受後記錄的最終條件；不提供交易成立後改約或站內聯絡方式。雙方自行到指定時間地點面交。
 
@@ -97,7 +97,7 @@
 
 1. [01-requirements.md](docs/01-requirements.md) — 問題、情境、FR、Business Rules、Acceptance Criteria 與 Scope。
 2. [02-api-design.md](docs/02-api-design.md) — 7 條 RESTful API、HTTP 狀態碼、FR–API Mapping。
-3. [03-openapi.yaml](docs/03-openapi.yaml) — OpenAPI 3.1.0 契約。
-4. [04-architecture-data-model.md](docs/04-architecture-data-model.md) — Router／Service／Repository、3 個 Entity 與追溯。
-5. [05-ai-collaboration.md](docs/05-ai-collaboration.md) — AI 協作、範圍收斂與決策紀錄。
+3. [03-openapi.yaml](docs/03-openapi.yaml) — OpenAPI 3.1.0 介面契約。
+4. [04-architecture-data-model.md](docs/04-architecture-data-model.md) — Router／Service／Repository、3 個 Entity 與需求追溯。
+5. [05-ai-collaboration.md](docs/05-ai-collaboration.md) — AI 協作、範圍收斂與設計決策紀錄。
 
